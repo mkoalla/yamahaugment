@@ -3,10 +3,11 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
+	"yamaclient/lib/channel"
 
 	"github.com/BurntSushi/toml"
 	"gitlab.com/gomidi/midi/v2"
-	"gitlab.com/gomidi/midi/v2/smf"
 
 	_ "gitlab.com/gomidi/midi/v2/drivers/midicatdrv"
 )
@@ -19,66 +20,57 @@ type config struct {
 	Main mainConfig `toml:"main"`
 }
 
+var settings config
+
+func init() {
+	if _, err := toml.DecodeFile("settings.toml", &settings); err != nil {
+		log.Fatalf("Couldn't decode settings: %v", err)
+	}
+}
+func NewPlayer(content *channel.Content) (*channel.Channel, error) {
+	driver, file := settings.Main.Driver, settings.Main.DefaultTrack
+	out, err := midi.FindOutPort(driver)
+	if err != nil {
+		return nil, fmt.Errorf("can't find '%s'", driver)
+	}
+	if content == nil {
+		content = &channel.Content{Source: channel.ContentFile, Data: file}
+	} else if file == "" {
+		return nil, errors.New("no file provided")
+	}
+	player := channel.New(&out)
+	if err := player.Load(*content, true); err != nil {
+		return nil, err
+	}
+	return player, err
+}
+
 const HELP = "args: [file]"
 
 func printPorts() {
-	fmt.Println(midi.GetOutPorts())
+	log.Println(midi.GetOutPorts())
 }
 func run() error {
-	var settings config
-	if _, err := toml.DecodeFile("settings.toml", &settings); err != nil {
+	player, err := NewPlayer(nil)
+	if err != nil {
 		return err
 	}
-
-	driver, file := settings.Main.Driver, settings.Main.DefaultTrack
-	printPorts()
-	out, err := midi.FindOutPort(driver)
+	log.Printf("DRIVER: %s", settings.Main.Driver)
+	log.Printf("Now Playing: %s", settings.Main.DefaultTrack)
+	start, err := player.GetPlayer()
 	if err != nil {
-		return fmt.Errorf("can't find '%s'", driver)
+		return err
 	}
-	if file == "" {
-		return errors.New("no file provided")
-	}
-	//return smf.ReadTracksFrom(bytes.NewReader(prelude4)).
-	//return smf.ReadTracksFrom(bytes.NewReader(voyager)).
-	reader := smf.ReadTracks(file).
-		//result := smf.ReadTracks("VOYAGER.MID", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20).
-		//Only(midi.NoteOnMsg, midi.NoteOffMsg).
-		//Only(midi.NoteOnMsg, midi.NoteOffMsg, midi.MetaMsgType).
-		//Only(midi.NoteMsg, midi.ControlChangeMsg, midi.ProgramChangeMsg).
-		//Only(midi.NoteOnMsg, midi.NoteOffMsg, midi.ControlChangeMsg, midi.ProgramChangeMsg, smf.MetaTrackNameMsg).
-		//Only(midi.ProgramChangeMsg, smf.MetaTrackNameMsg, smf.MetaTempoMsg, smf.MetaTimeSigMsg).
-		//Only(smf.MetaMsg).
-		Do(
-			func(te smf.TrackEvent) {
-				if te.Message.IsMeta() {
-					fmt.Printf("[%v] @%vms %s\n", te.TrackNo, te.AbsMicroSeconds/1000, te.Message.String())
-					/*
-						var t string
-						if mm.Text(&t) {
-							//fmt.Printf("[%v] %s %s (%s): %q\n", te.TrackNo, msg.Type().Kind(), msg.String(), msg.Type(), t)
-							fmt.Printf("[%v] %s: %q\n", te.TrackNo, te.Type, t)
-							//fmt.Printf("[%v] %s %s (%s): %q\n", te.TrackNo, mm.Type().Kind(), mm.String(), mm.Type(), t)
-						}
-						var bpm float64
-						if mm.Tempo(&bpm) {
-							fmt.Printf("[%v] %s: %v\n", te.TrackNo, te.Type, math.Round(bpm))
-						}
-					*/
-				} /* else {
-				 	fmt.Printf("[%v] %s\n", te.TrackNo, te.Message)
-				}*/
-			},
-		)
-	fmt.Printf("\nDRIVER: %s\nNow Playing: %s\n", driver, file)
-	return reader.Play(out)
+	go start() //nolint
+	return player.Await()
 }
 
 func main() {
 	defer midi.CloseDriver()
+	printPorts()
 	err := run()
 
 	if err != nil {
-		fmt.Printf("ERROR: %s\n", err.Error())
+		log.Println(err)
 	}
 }
