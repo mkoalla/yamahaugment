@@ -1,0 +1,3 @@
+[main]
+driver = "FLUID Synth"
+default-track = "data/track.mid"

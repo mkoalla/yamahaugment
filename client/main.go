@@ -3,44 +3,45 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
 
+	"github.com/BurntSushi/toml"
 	"gitlab.com/gomidi/midi/v2"
 	"gitlab.com/gomidi/midi/v2/smf"
 
 	_ "gitlab.com/gomidi/midi/v2/drivers/midicatdrv"
 )
 
+type mainConfig struct {
+	Driver       string `toml:"driver"`
+	DefaultTrack string `toml:"default-track"`
+}
+type config struct {
+	Main mainConfig `toml:"main"`
+}
+
+const HELP = "args: [file]"
+
 func printPorts() {
 	fmt.Println(midi.GetOutPorts())
 }
-
-const HELP = "args: [driver] [file]"
-
-func checkArgs(n int) error {
-	if len(os.Args) < n {
-		return errors.New(HELP)
-	}
-	return nil
-}
-
 func run() error {
-	if err := checkArgs(3); err != nil {
+	var settings config
+	if _, err := toml.DecodeFile("settings.toml", &settings); err != nil {
 		return err
 	}
-	driver, file := os.Args[1], os.Args[2]
+
+	driver, file := settings.Main.Driver, settings.Main.DefaultTrack
 	printPorts()
 	out, err := midi.FindOutPort(driver)
 	if err != nil {
 		return fmt.Errorf("can't find '%s'", driver)
 	}
 	if file == "" {
-		// log.Fatal("No song provided")
-		file = "data/track.mid"
+		return errors.New("no file provided")
 	}
 	//return smf.ReadTracksFrom(bytes.NewReader(prelude4)).
 	//return smf.ReadTracksFrom(bytes.NewReader(voyager)).
-	return smf.ReadTracks(file).
+	reader := smf.ReadTracks(file).
 		//result := smf.ReadTracks("VOYAGER.MID", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20).
 		//Only(midi.NoteOnMsg, midi.NoteOffMsg).
 		//Only(midi.NoteOnMsg, midi.NoteOffMsg, midi.MetaMsgType).
@@ -64,11 +65,13 @@ func run() error {
 							fmt.Printf("[%v] %s: %v\n", te.TrackNo, te.Type, math.Round(bpm))
 						}
 					*/
-				} else {
-					//fmt.Printf("[%v] %s\n", te.TrackNo, te.Message)
-				}
+				} /* else {
+				 	fmt.Printf("[%v] %s\n", te.TrackNo, te.Message)
+				}*/
 			},
-		).Play(out)
+		)
+	fmt.Printf("\nDRIVER: %s\nNow Playing: %s\n", driver, file)
+	return reader.Play(out)
 }
 
 func main() {

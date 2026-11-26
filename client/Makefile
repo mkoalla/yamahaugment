@@ -6,4 +6,4 @@ dev:
 		go run \
 			-ldflags "-X 'yamaclient/lib/info/version.version=dev' \
 			-X 'yamaclient/lib/info/version.source=local'" \
-			.
+			. $(ARGS)
