@@ -1,34 +1,29 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"yamaclient/lib/channel"
+	"yamaclient/lib/node"
+	"yamaclient/lib/settings"
 
-	"github.com/BurntSushi/toml"
 	"gitlab.com/gomidi/midi/v2"
 
 	_ "gitlab.com/gomidi/midi/v2/drivers/midicatdrv"
 )
 
-type mainConfig struct {
-	Driver       string `toml:"driver"`
-	DefaultTrack string `toml:"default-track"`
-}
-type config struct {
-	Main mainConfig `toml:"main"`
-}
-
-var settings config
+var config settings.Config
 
 func init() {
-	if _, err := toml.DecodeFile("settings.toml", &settings); err != nil {
-		log.Fatalf("Couldn't decode settings: %v", err)
+	if _, err := settings.Decode("settings.toml", &config); err != nil {
+		log.Fatal(err)
 	}
+
 }
 func NewPlayer(content *channel.Content) (*channel.Channel, error) {
-	driver, file := settings.Main.Driver, settings.Main.DefaultTrack
+	driver, file := config.Main.Driver, config.Main.DefaultTrack
 	out, err := midi.FindOutPort(driver)
 	if err != nil {
 		return nil, fmt.Errorf("can't find '%s'", driver)
@@ -55,8 +50,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	log.Printf("DRIVER: %s", settings.Main.Driver)
-	log.Printf("Now Playing: %s", settings.Main.DefaultTrack)
+	node := node.New(config.HTTPNode)
+
+	go node.Start()
+	defer node.Stop(context.Background()) //nolint
+
+	log.Printf("DRIVER: %s", config.Main.Driver)
+	log.Printf("Now Playing: %s", config.Main.DefaultTrack)
 	start, err := player.GetPlayer()
 	if err != nil {
 		return err

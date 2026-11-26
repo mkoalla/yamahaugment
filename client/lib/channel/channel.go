@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"yamaclient/lib"
+
 	"gitlab.com/gomidi/midi/v2/drivers"
 	"gitlab.com/gomidi/midi/v2/smf"
 )
@@ -41,16 +43,6 @@ type Channel struct {
 	loaded  bool
 	epoch   atomic.Uint64
 	done    chan error
-}
-
-func drain[T any](c chan T, value T) {
-	for {
-		select {
-		case c <- value:
-		default:
-			return
-		}
-	}
 }
 
 func New(d *drivers.Out) *Channel {
@@ -156,7 +148,7 @@ func (c *Channel) getPlayerHandle() func() error {
 			return ErrHandleExpired
 		}
 		err := rd.Play(*out)
-		drain(done, err)
+		lib.Drain(done, err)
 		return err
 	}
 }
