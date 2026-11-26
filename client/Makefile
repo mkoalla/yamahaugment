@@ -1,4 +1,4 @@
-.PHONY : dev
+.PHONY : dev build
 .DEFAULT_GOAL := dev # -> just make
 
 dev:
