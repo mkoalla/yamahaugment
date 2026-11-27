@@ -8,31 +8,13 @@ import (
 	"sync/atomic"
 
 	"yamaclient/lib"
+	"yamaclient/lib/api"
 
 	"gitlab.com/gomidi/midi/v2/drivers"
 	"gitlab.com/gomidi/midi/v2/smf"
 )
 
-type SourceType uint8
-
-const (
-	None SourceType = iota
-	ContentFile
-	ContentDirect
-)
-
-func (s SourceType) String() string {
-	switch s {
-	case None:
-		return "None"
-	case ContentFile:
-		return "ContentFile"
-	case ContentDirect:
-		return "ContentDirect"
-	default:
-		return "Unknown"
-	}
-}
+type SourceType = api.SourceType
 
 var (
 	ErrLoadPlaying          = errors.New("attempt to load new content while existing")
@@ -100,11 +82,11 @@ func (c *Channel) Stop() {
 func (c *Channel) setReader(data *Content) error {
 	var rd *smf.TracksReader
 	switch data.Source {
-	case None:
+	case api.None:
 		return ErrNoContentLoaded
-	case ContentFile:
-		rd = smf.ReadTracks((data.Data).(string), data.Tracks...)
-	case ContentDirect:
+	case api.ContentFile:
+		rd = smf.ReadTracks(fmt.Sprintf("data/%s", data.Data), data.Tracks...)
+	case api.ContentDirect:
 		rd = smf.ReadTracksFrom((data.Data).(io.Reader), data.Tracks...)
 	default:
 		return fmt.Errorf("%w: %d", ErrUnknownContentSource, data.Source)
