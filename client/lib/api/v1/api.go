@@ -27,6 +27,8 @@ func (h *Handler) InitRoutes() {
 		).Route("/queue", func(r chi.Router) {
 			r.Get("/", HTTPGetQueue(h))
 			r.Post("/add", HTTPAddQueue(h))
+			r.Post("/remove", HTTPRemoveQueue(h))
+			r.Post("/remove-at", HTTPRemoveAtQueue(h))
 		})
 	})
 }
@@ -85,6 +87,70 @@ func HTTPAddQueue(h *Handler) httpFunc {
 			return
 		}
 		err = json.NewEncoder(w).Encode(resp)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+	}
+}
+
+func HTTPRemoveQueue(h *Handler) httpFunc {
+	return func(w wrt, r *req) {
+		var songs []api.Song
+		var err error
+		if err = json.NewDecoder(r.Body).Decode(&songs); err != nil {
+			var e *http.MaxBytesError
+			if errors.As(err, &e) {
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+			} else {
+				w.WriteHeader(http.StatusBadRequest) //not 500 bc sender's payload
+			}
+			return
+		}
+
+		err = json.NewEncoder(w).Encode(h.RemoveSongs(songs...))
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+	}
+}
+
+func HTTPRemoveAtQueue(h *Handler) httpFunc {
+	return func(w wrt, r *req) {
+		var intSongs []int
+		var err error
+		if err = json.NewDecoder(r.Body).Decode(&intSongs); err != nil {
+			var e *http.MaxBytesError
+			if errors.As(err, &e) {
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+			} else {
+				w.WriteHeader(http.StatusBadRequest) //not 500 bc sender's payload
+			}
+			return
+		}
+		queueLen := h.queue.Len()
+		songCap := min(queueLen, len(intSongs))
+		songs := make([]uint, 0, songCap)
+		for _, i := range intSongs {
+			if len(songs) >= songCap {
+				break
+			}
+
+			idx := i
+			if idx < 0 {
+				idx += queueLen
+			}
+			if idx < 0 || idx > queueLen {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+
+			songs = append(songs, uint(idx))
+		}
+		err = json.NewEncoder(w).Encode(h.RemoveIndices(songs...))
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			return

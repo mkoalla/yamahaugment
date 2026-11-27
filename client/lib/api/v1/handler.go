@@ -35,17 +35,17 @@ func (h *Handler) newAPICCR() *api.QueueChangeResponse {
 func (h *Handler) Peek(max uint) *api.Queue {
 	h.mx.RLock()
 	defer h.mx.RUnlock()
-	len := min(uint(h.queue.Len()), max, h.config.QueueSize)
+	slen := min(uint(h.queue.Len()), max, h.config.QueueSize)
 	q := &api.Queue{
 		QueueChangeResponse: *h.newAPICCR(),
-		Songs:               make([]api.Song, 0, len),
+		Songs:               make([]api.Song, 0, slen),
 	}
-	if len == 0 {
+	if slen == 0 {
 		return q
 	}
 
 	cur := h.queue.Front()
-	for cur != nil {
+	for cur != nil && uint(len(q.Songs)) < max {
 		q.Songs = append(q.Songs, cur.Value.(api.Song))
 		cur = cur.Next()
 	}
@@ -79,33 +79,40 @@ func (h *Handler) RemoveIndices(idxs ...uint) *api.QueueChangeResponse {
 	var qi uint = 0
 	cur := h.queue.Front()
 	for cur != nil {
+		next := cur.Next()
 		if _, ok := imap[qi]; ok {
 			h.queue.Remove(cur)
 		}
 		if qi == maxQi {
 			break
 		}
-		cur = cur.Next()
+		cur = next
 		qi++
 	}
 	return h.newAPICCR()
 }
 func (h *Handler) RemoveSongs(songs ...api.Song) *api.QueueChangeResponse {
 	smap := make(map[api.Song]int)
+	maxDel := len(songs)
 	for _, song := range songs {
-		smap[song] = 1
+		smap[song]++
+		maxDel++
 	}
 
 	h.mx.Lock()
 	defer h.mx.Unlock()
 
 	cur := h.queue.Front()
-	for cur != nil {
-		v := cur.Value.(*api.Song)
-		if _, ok := smap[*v]; ok {
+	del := 0
+	for cur != nil && del < maxDel {
+		next := cur.Next()
+		v := cur.Value.(api.Song)
+		if count := smap[v]; count > 0 {
 			h.queue.Remove(cur)
+			smap[v]--
+			del++
 		}
-		cur = cur.Next()
+		cur = next
 	}
 	return h.newAPICCR()
 
