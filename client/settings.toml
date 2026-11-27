@@ -8,4 +8,4 @@ queue-size = 50
 song-cache = 10
 
 [http.limits]
-body-prefer-kb = 4
+body-prefer-kb = 32
