@@ -4,29 +4,38 @@ import (
 	"container/list"
 	"sync"
 	"sync/atomic"
+	"time"
 	"yamaclient/lib/api"
 	"yamaclient/lib/channel"
 	"yamaclient/lib/settings"
 
 	"github.com/go-chi/chi/v5"
+	"gitlab.com/gomidi/midi/v2/drivers"
 )
 
 type Handler struct {
 	api.NodeHandler
 	*chi.Mux
-	init     atomic.Bool
-	mx       sync.RWMutex
-	queue    *list.List
-	config   settings.HttpConfig
-	channels []*channel.Channel
+	init   atomic.Bool
+	mx     sync.RWMutex
+	queue  *list.List
+	config settings.HttpConfig
+
+	channels *channelCache
 }
 
-func NewRouter(config settings.HttpConfig) *Handler {
+func NewHandler(driver *drivers.Out, config settings.HttpConfig) *Handler {
+	cacheSize := config.SongCache
+	chs := make([]*channel.Channel, 0, cacheSize)
+	for range cacheSize {
+		chs = append(chs, channel.New(driver))
+	}
+	ttl := time.Second * time.Duration(config.Limits.CacheExpirySeconds)
 	return &Handler{
 		Mux:      chi.NewRouter(),
 		queue:    list.New(),
 		config:   config,
-		channels: make([]*channel.Channel, 0, config.SongCache),
+		channels: newChannelCache(chs, ttl),
 	}
 }
 func (h *Handler) newAPICCR() *api.QueueChangeResponse {
@@ -58,6 +67,9 @@ func (h *Handler) Push(songs ...api.Song) (*api.QueueChangeResponse, error) {
 		return nil, api.ErrQueueFull
 	}
 	for _, s := range songs {
+		if api.ToSourceType(s.Type) == api.None { //bad input
+			continue
+		}
 		h.queue.PushBack(s)
 	}
 	return h.newAPICCR(), nil

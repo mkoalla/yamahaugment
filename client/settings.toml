@@ -9,3 +9,4 @@ song-cache = 10
 
 [http.limits]
 body-prefer-kb = 32
+cache-expiry-sec = 3600

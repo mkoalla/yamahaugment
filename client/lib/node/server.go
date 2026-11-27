@@ -56,9 +56,8 @@ func New(driver *drivers.Out, config settings.HttpConfig) EdgeNode {
 		return nil
 	}
 
-	r := api.NewRouter(config)
+	r := api.NewHandler(driver, config)
 	r.Use(middleware.Logger)
-	r.BuildChannels(driver, config.SongCache)
 	r.InitRoutes()
 
 	return &Node{

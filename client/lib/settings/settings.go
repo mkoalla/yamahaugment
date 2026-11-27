@@ -18,7 +18,8 @@ type NodeConfig struct {
 	SongCache uint `toml:"song-cache"`
 }
 type LimitsConfig struct {
-	BodyPreferKB uint `toml:"body-prefer-kb"`
+	BodyPreferKB       uint `toml:"body-prefer-kb"`
+	CacheExpirySeconds uint `toml:"cache-expiry-sec"`
 }
 type HttpConfig struct {
 	NodeConfig `toml:"node"`
