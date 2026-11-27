@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"yamaclient/lib/api"
 	"yamaclient/lib/channel"
@@ -16,17 +17,22 @@ import (
 
 var config settings.Config
 var driver *drivers.Out
+var stopRuntime func() error
 
 func init() {
-	var err error
+	log.Println("Load Settings")
 	if _, err := settings.Decode("settings.toml", &config); err != nil {
 		log.Fatal(err)
 	}
-	out, err := midi.FindOutPort(config.Main.Driver)
+	log.Println("Load Runtime")
+	out, stop, err := config.LaunchDriverRuntime()
 	if err != nil {
-		log.Fatalf("can't find driver '%s'", config.Main.Driver)
+		log.Fatal(err)
 	}
+	stopRuntime = stop
 	driver = &out
+	printPorts()
+	log.Println("Ready")
 }
 
 func NewPlayer(content *channel.Content) (*channel.Channel, error) {
@@ -47,7 +53,7 @@ func NewPlayer(content *channel.Content) (*channel.Channel, error) {
 const HELP = "args: [file]"
 
 func printPorts() {
-	log.Println(midi.GetOutPorts())
+	fmt.Println(midi.GetOutPorts())
 }
 func RunDefaultTrack() error {
 	player, err := NewPlayer(nil)
@@ -55,7 +61,7 @@ func RunDefaultTrack() error {
 		return err
 	}
 
-	log.Printf("DRIVER: %s", config.Main.Driver)
+	log.Printf("DRIVER: %s", config.Main.Runtime)
 	log.Printf("Now Playing: %s", config.Main.DefaultTrack)
 	start, err := player.GetPlayer()
 	if err != nil {
@@ -67,7 +73,7 @@ func RunDefaultTrack() error {
 
 func main() {
 	defer midi.CloseDriver()
-	printPorts()
+	defer stopRuntime() //nolint
 
 	node := node.New(driver, config.HttpConfig)
 	node.Start()

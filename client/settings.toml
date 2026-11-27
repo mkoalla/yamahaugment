@@ -1,6 +1,11 @@
 [main]
-driver = "FLUID Synth"
+runtime = "fluidsynth"      # midi bridge
 default-track = "track.mid"
+
+[driver]
+audio-driver = "alsa"
+midi-driver = "alsa_seq"
+sound-fonts = ["/usr/share/soundfonts/FluidR3_GM.sf2"]
 
 [http.node]
 port = 33330
