@@ -1,7 +1,6 @@
 package v1
 
 import (
-	"errors"
 	"sync"
 	"time"
 	"yamaclient/lib/api"
@@ -9,8 +8,6 @@ import (
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
 )
-
-var errNilChannelEntry = errors.New("channel in cache was nil")
 
 type channelCache struct {
 	mu       sync.Mutex // serializes lookup + assign (compound ops aren't atomic)
@@ -21,7 +18,18 @@ type channelCache struct {
 	free   []int
 }
 
+// panic if invalid/no channels
 func newChannelCache(chs []*channel.Channel, ttl time.Duration) *channelCache {
+	if len(chs) == 0 {
+		panic("no channels provided for cache")
+	} else {
+		for _, ch := range chs {
+			if ch != nil {
+				continue
+			}
+			panic("nil channel provided to cache")
+		}
+	}
 	c := &channelCache{channels: chs, free: make([]int, 0, len(chs))}
 	for i := len(chs) - 1; i >= 0; i-- {
 		c.free = append(c.free, i)
@@ -55,13 +63,20 @@ func (c *channelCache) Pop() (int, bool) {
 	return idx, true
 }
 
-// Stops cursong if channel held it (.Play() should ensure directly after)
+func chanStop(c *channel.Channel) {
+	c.Stop()
+	_ = c.HaltNotesNow()
+}
+
+// Stops curSong if it was reused
 func (c *channelCache) Load(song api.Song) (*channel.Channel, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.ForEach(chanStop)
 	if idx, ok := c.lru.Get(song); ok {
-		return c.channels[idx], nil
+		ch := c.channels[idx]
+		return ch, nil
 	}
 	c.lru.Remove(song) // drop a stale/expired entry @ this key so its slot isn't leaked
 
@@ -69,15 +84,10 @@ func (c *channelCache) Load(song api.Song) (*channel.Channel, error) {
 	if !ok {
 		// evict, retry
 		c.lru.RemoveOldest()
-		if idx, ok = c.Pop(); !ok {
-			return nil, errors.New("no free channel")
-		}
+		idx, _ = c.Pop() // impossible to fail, assuming nonempty input
 	}
 
 	ch := c.channels[idx]
-	if ch == nil {
-		panic(errNilChannelEntry)
-	}
 	ch.Stop() // ex, was playing back-to-back
 	content := channel.Content{Name: song.Name, Data: song.Name, Source: api.ToSourceType(song.Type)}
 	if err := ch.Load(content, false); err != nil {

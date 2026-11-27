@@ -30,7 +30,7 @@ func (h *Handler) InitRoutes() {
 		).Route("/player", func(r chi.Router) {
 			r.Get("/", HTTPGetPlayer(h))
 			r.Patch("/", HTTPSetPlayer(h))
-			r.Post("/next", HTTPSkipPlayer(h))
+			r.Post("/next", HTTPNextPlayer(h))
 		})
 	})
 }

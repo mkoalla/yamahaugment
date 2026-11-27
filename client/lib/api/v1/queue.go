@@ -102,7 +102,7 @@ func HTTPRemoveAtQueue(h *Handler) httpFunc {
 			if idx < 0 {
 				idx += queueLen
 			}
-			if idx < 0 || idx > queueLen {
+			if idx < 0 || idx >= queueLen {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}

@@ -108,7 +108,6 @@ func (h *Handler) RemoveSongs(songs ...api.Song) *api.QueueChangeResponse {
 	maxDel := len(songs)
 	for _, song := range songs {
 		smap[song]++
-		maxDel++
 	}
 
 	h.mx.Lock()
