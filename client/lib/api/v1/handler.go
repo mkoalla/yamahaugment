@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"sync"
 	"sync/atomic"
+	"yamaclient/lib/api"
 	"yamaclient/lib/channel"
 	"yamaclient/lib/settings"
 
@@ -11,7 +12,7 @@ import (
 )
 
 type Handler struct {
-	APINodeHandler
+	api.NodeHandler
 	*chi.Mux
 	init     atomic.Bool
 	mx       sync.RWMutex
@@ -28,16 +29,16 @@ func NewRouter(config settings.HttpConfig) *Handler {
 		channels: make([]*channel.Channel, 0, config.SongCache),
 	}
 }
-func (h *Handler) newAPICCR() *APIQueueChangeResponse {
-	return &APIQueueChangeResponse{uint(h.queue.Len()), h.config.QueueSize}
+func (h *Handler) newAPICCR() *api.QueueChangeResponse {
+	return &api.QueueChangeResponse{Length: uint(h.queue.Len()), Capacity: h.config.QueueSize}
 }
-func (h *Handler) Peek(max uint) *APIQueue {
+func (h *Handler) Peek(max uint) *api.Queue {
 	h.mx.RLock()
 	defer h.mx.RUnlock()
 	len := min(uint(h.queue.Len()), max, h.config.QueueSize)
-	q := &APIQueue{
-		*h.newAPICCR(),
-		make([]APISong, 0, len),
+	q := &api.Queue{
+		QueueChangeResponse: *h.newAPICCR(),
+		Songs:               make([]api.Song, 0, len),
 	}
 	if len == 0 {
 		return q
@@ -45,21 +46,23 @@ func (h *Handler) Peek(max uint) *APIQueue {
 
 	cur := h.queue.Front()
 	for cur != nil {
-		q.Songs = append(q.Songs, cur.Value.(APISong))
+		q.Songs = append(q.Songs, cur.Value.(api.Song))
 		cur = cur.Next()
 	}
 	return q
 }
-func (h *Handler) Push(song APISong) (*APIQueueChangeResponse, error) {
+func (h *Handler) Push(songs ...api.Song) (*api.QueueChangeResponse, error) {
 	h.mx.Lock()
 	defer h.mx.Unlock()
-	if uint(h.queue.Len()) >= h.config.QueueSize {
-		return nil, ErrAPIQueueFull
+	if uint(h.queue.Len()+len(songs)) > h.config.QueueSize {
+		return nil, api.ErrQueueFull
 	}
-	h.queue.PushBack(&song)
+	for _, s := range songs {
+		h.queue.PushBack(s)
+	}
 	return h.newAPICCR(), nil
 }
-func (h *Handler) RemoveIndices(idxs ...uint) *APIQueueChangeResponse {
+func (h *Handler) RemoveIndices(idxs ...uint) *api.QueueChangeResponse {
 	if len(idxs) == 0 {
 		return h.newAPICCR()
 	}
@@ -87,8 +90,8 @@ func (h *Handler) RemoveIndices(idxs ...uint) *APIQueueChangeResponse {
 	}
 	return h.newAPICCR()
 }
-func (h *Handler) RemoveSongs(songs ...APISong) *APIQueueChangeResponse {
-	smap := make(map[APISong]int)
+func (h *Handler) RemoveSongs(songs ...api.Song) *api.QueueChangeResponse {
+	smap := make(map[api.Song]int)
 	for _, song := range songs {
 		smap[song] = 1
 	}
@@ -98,7 +101,7 @@ func (h *Handler) RemoveSongs(songs ...APISong) *APIQueueChangeResponse {
 
 	cur := h.queue.Front()
 	for cur != nil {
-		v := cur.Value.(*APISong)
+		v := cur.Value.(*api.Song)
 		if _, ok := smap[*v]; ok {
 			h.queue.Remove(cur)
 		}
@@ -107,7 +110,7 @@ func (h *Handler) RemoveSongs(songs ...APISong) *APIQueueChangeResponse {
 	return h.newAPICCR()
 
 }
-func (h *Handler) Clear() *APIQueueChangeResponse {
+func (h *Handler) Clear() *api.QueueChangeResponse {
 	h.mx.Lock()
 	defer h.mx.Unlock()
 	h.queue.Init()
