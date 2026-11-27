@@ -11,14 +11,22 @@ type MainConfig struct {
 	Driver       string `toml:"driver"`
 	DefaultTrack string `toml:"default-track"`
 }
-type HttpConfig struct {
+
+type NodeConfig struct {
 	Port      uint `toml:"port"`
 	QueueSize uint `toml:"queue-size"`
 	SongCache uint `toml:"song-cache"`
 }
+type LimitsConfig struct {
+	BodyPreferKB uint `toml:"body-prefer-kb"`
+}
+type HttpConfig struct {
+	NodeConfig `toml:"node"`
+	Limits     LimitsConfig `toml:"limits"`
+}
 type Config struct {
 	Main       MainConfig `toml:"main"`
-	HttpConfig HttpConfig `toml:"listener"`
+	HttpConfig HttpConfig `toml:"http"`
 }
 
 var (

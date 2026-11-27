@@ -1,8 +1,11 @@
 [main]
 driver = "FLUID Synth"
-default-track = "data/track.mid"
+default-track = "track.mid"
 
-[listener]
+[http.node]
 port = 33330
 queue-size = 50
 song-cache = 10
+
+[http.limits]
+body-prefer-kb = 4
