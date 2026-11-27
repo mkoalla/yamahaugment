@@ -4,3 +4,5 @@ default-track = "data/track.mid"
 
 [listener]
 port = 33330
+queue-size = 50
+song-cache = 10

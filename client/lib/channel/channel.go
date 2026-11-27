@@ -13,11 +13,26 @@ import (
 	"gitlab.com/gomidi/midi/v2/smf"
 )
 
+type SourceType uint8
+
 const (
-	None = iota
+	None SourceType = iota
 	ContentFile
 	ContentDirect
 )
+
+func (s SourceType) String() string {
+	switch s {
+	case None:
+		return "None"
+	case ContentFile:
+		return "ContentFile"
+	case ContentDirect:
+		return "ContentDirect"
+	default:
+		return "Unknown"
+	}
+}
 
 var (
 	ErrLoadPlaying          = errors.New("attempt to load new content while existing")
@@ -29,7 +44,8 @@ var (
 )
 
 type Content struct {
-	Source uint
+	Name   string
+	Source SourceType
 	Data   any
 	Tracks []int
 }

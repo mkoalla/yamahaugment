@@ -9,8 +9,10 @@ import (
 	"yamaclient/lib"
 	"yamaclient/lib/settings"
 
-	"github.com/go-chi/chi/v5"
+	api "yamaclient/lib/api/v1"
+
 	"github.com/go-chi/chi/v5/middleware"
+	"gitlab.com/gomidi/midi/v2/drivers"
 )
 
 var (
@@ -44,23 +46,26 @@ func (n *Node) Start() {
 	lib.Drain(n.res, n.server.ListenAndServe())
 }
 func (n *Node) Stop(ctx context.Context) error {
-	if n.available.CompareAndSwap(true, false) {
+	if !n.available.CompareAndSwap(true, false) {
 		return ErrNodeUnstarted //not started
 	}
 	return n.server.Shutdown(ctx)
 }
-func New(config settings.NodeConfig) EdgeNode {
+func New(driver *drivers.Out, config settings.HttpConfig) EdgeNode {
 	if config.Port == 0 {
 		return nil
 	}
-	r := chi.NewRouter()
+
+	r := api.NewRouter(config)
 	r.Use(middleware.Logger)
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("welcome")) //nolint
-	})
+	r.BuildChannels(driver, config.SongCache)
+	r.InitRoutes()
 
 	return &Node{
-		server: &http.Server{Addr: fmt.Sprintf(":%d", config.Port), Handler: r},
-		res:    make(chan error),
+		server: &http.Server{
+			Addr:    fmt.Sprintf(":%d", config.Port),
+			Handler: r,
+		},
+		res: make(chan error),
 	}
 }

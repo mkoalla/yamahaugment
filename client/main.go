@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"errors"
-	"fmt"
 	"log"
 	"yamaclient/lib/channel"
 	"yamaclient/lib/node"
@@ -11,33 +9,38 @@ import (
 
 	"gitlab.com/gomidi/midi/v2"
 
+	"gitlab.com/gomidi/midi/v2/drivers"
 	_ "gitlab.com/gomidi/midi/v2/drivers/midicatdrv"
 )
 
 var config settings.Config
+var driver *drivers.Out
 
 func init() {
+	var err error
 	if _, err := settings.Decode("settings.toml", &config); err != nil {
 		log.Fatal(err)
 	}
-
-}
-func NewPlayer(content *channel.Content) (*channel.Channel, error) {
-	driver, file := config.Main.Driver, config.Main.DefaultTrack
-	out, err := midi.FindOutPort(driver)
+	out, err := midi.FindOutPort(config.Main.Driver)
 	if err != nil {
-		return nil, fmt.Errorf("can't find '%s'", driver)
+		log.Fatalf("can't find driver '%s'", config.Main.Driver)
 	}
+	driver = &out
+}
+
+func NewPlayer(content *channel.Content) (*channel.Channel, error) {
+	file := config.Main.DefaultTrack
+
 	if content == nil {
-		content = &channel.Content{Source: channel.ContentFile, Data: file}
+		content = &channel.Content{Name: file, Source: channel.ContentFile, Data: file}
 	} else if file == "" {
 		return nil, errors.New("no file provided")
 	}
-	player := channel.New(&out)
+	player := channel.New(driver)
 	if err := player.Load(*content, true); err != nil {
 		return nil, err
 	}
-	return player, err
+	return player, nil
 }
 
 const HELP = "args: [file]"
@@ -45,15 +48,11 @@ const HELP = "args: [file]"
 func printPorts() {
 	log.Println(midi.GetOutPorts())
 }
-func run() error {
+func RunDefaultTrack() error {
 	player, err := NewPlayer(nil)
 	if err != nil {
 		return err
 	}
-	node := node.New(config.HTTPNode)
-
-	go node.Start()
-	defer node.Stop(context.Background()) //nolint
 
 	log.Printf("DRIVER: %s", config.Main.Driver)
 	log.Printf("Now Playing: %s", config.Main.DefaultTrack)
@@ -68,9 +67,7 @@ func run() error {
 func main() {
 	defer midi.CloseDriver()
 	printPorts()
-	err := run()
 
-	if err != nil {
-		log.Println(err)
-	}
+	node := node.New(driver, config.HttpConfig)
+	node.Start()
 }
