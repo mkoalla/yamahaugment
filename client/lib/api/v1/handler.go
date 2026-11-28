@@ -22,7 +22,8 @@ type Handler struct {
 	queue  *list.List
 	config settings.HttpConfig
 
-	channels *channelCache
+	qsubscribe chan struct{} // doesnt return element (subs compete to pop)
+	channels   *channelCache
 }
 
 func NewHandler(driver *drivers.Out, config settings.HttpConfig) *Handler {
@@ -33,12 +34,18 @@ func NewHandler(driver *drivers.Out, config settings.HttpConfig) *Handler {
 	}
 	ttl := time.Second * time.Duration(config.Limits.CacheExpirySeconds)
 	return &Handler{
-		Mux:      chi.NewRouter(),
-		queue:    list.New(),
-		config:   config,
-		channels: newChannelCache(chs, ttl),
+		Mux:        chi.NewRouter(),
+		queue:      list.New(),
+		config:     config,
+		channels:   newChannelCache(chs, ttl),
+		qsubscribe: make(chan struct{}),
 	}
 }
+
+func (h *Handler) AwaitPush() <-chan struct{} {
+	return h.qsubscribe
+}
+
 func (h *Handler) newAPICCR() *api.QueueChangeResponse {
 	return &api.QueueChangeResponse{Length: uint(h.queue.Len()), Capacity: h.config.QueueSize}
 }
@@ -73,6 +80,12 @@ func (h *Handler) Push(songs ...api.Song) (*api.QueueChangeResponse, error) {
 		}
 		h.queue.PushBack(s)
 	}
+
+	//release .AwaitPush()
+	old := h.qsubscribe
+	h.qsubscribe = make(chan struct{})
+	close(old)
+
 	return h.newAPICCR(), nil
 }
 func (h *Handler) RemoveIndices(idxs ...uint) *api.QueueChangeResponse {
