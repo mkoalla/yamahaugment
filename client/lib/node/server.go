@@ -59,6 +59,7 @@ func New(driver *drivers.Out, config settings.HttpConfig) EdgeNode {
 	r := api.NewHandler(driver, config)
 	r.Use(middleware.Logger)
 	r.InitRoutes()
+	api.InitPlayerWorker(r)
 
 	return &Node{
 		server: &http.Server{
