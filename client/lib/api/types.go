@@ -10,6 +10,7 @@ import (
 var (
 	ErrBadRequest = errors.New("")
 	ErrQueueFull  = fmt.Errorf("queue will not fit request%w", ErrBadRequest)
+	ErrBadIndex   = fmt.Errorf("queue index out of range%w", ErrBadRequest)
 )
 
 type SourceType = lib.SourceType

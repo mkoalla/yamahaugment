@@ -22,7 +22,7 @@ type Handler struct {
 	queue  *list.List
 	config settings.HttpConfig
 
-	qsubscribe chan struct{} // doesnt return element (subs compete to pop)
+	qsubscribe chan struct{} // 1-slot level signal, never replaced; doesnt return element (subs compete to pop)
 	channels   *channelCache
 }
 
@@ -38,14 +38,17 @@ func NewHandler(driver *drivers.Out, config settings.HttpConfig) *Handler {
 		queue:      list.New(),
 		config:     config,
 		channels:   newChannelCache(chs, ttl),
-		qsubscribe: make(chan struct{}),
+		qsubscribe: make(chan struct{}, 1),
 	}
 }
 
+// fires once per batch of pushes since the last receive; a push made while
+// nobody is waiting stays pending instead of being missed
 func (h *Handler) AwaitPush() <-chan struct{} {
 	return h.qsubscribe
 }
 
+// caller must hold h.mx
 func (h *Handler) newAPICCR() *api.QueueChangeResponse {
 	return &api.QueueChangeResponse{Length: uint(h.queue.Len()), Capacity: h.config.QueueSize}
 }
@@ -82,13 +85,43 @@ func (h *Handler) Push(songs ...api.Song) (*api.QueueChangeResponse, error) {
 	}
 
 	//release .AwaitPush()
-	old := h.qsubscribe
-	h.qsubscribe = make(chan struct{})
-	close(old)
+	select {
+	case h.qsubscribe <- struct{}{}:
+	default: // already pending
+	}
 
 	return h.newAPICCR(), nil
 }
 func (h *Handler) RemoveIndices(idxs ...uint) *api.QueueChangeResponse {
+	h.mx.Lock()
+	defer h.mx.Unlock()
+	return h.removeIndices(idxs)
+}
+
+// like RemoveIndices, but negative idxs count from the back. resolved under the
+// same lock as the removal so a concurrent push/pop can't shift them
+func (h *Handler) RemoveAt(idxs ...int) (*api.QueueChangeResponse, error) {
+	h.mx.Lock()
+	defer h.mx.Unlock()
+	queueLen := h.queue.Len()
+	resolved := make([]uint, 0, min(queueLen, len(idxs)))
+	for _, idx := range idxs {
+		if len(resolved) >= queueLen {
+			break
+		}
+		if idx < 0 {
+			idx += queueLen
+		}
+		if idx < 0 || idx >= queueLen {
+			return nil, api.ErrBadIndex
+		}
+		resolved = append(resolved, uint(idx))
+	}
+	return h.removeIndices(resolved), nil
+}
+
+// caller must hold h.mx
+func (h *Handler) removeIndices(idxs []uint) *api.QueueChangeResponse {
 	if len(idxs) == 0 {
 		return h.newAPICCR()
 	}
@@ -98,9 +131,6 @@ func (h *Handler) RemoveIndices(idxs ...uint) *api.QueueChangeResponse {
 		imap[idx] = 1
 		maxQi = max(maxQi, idx) //break early
 	}
-
-	h.mx.Lock()
-	defer h.mx.Unlock()
 
 	var qi uint = 0
 	cur := h.queue.Front()

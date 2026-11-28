@@ -90,26 +90,12 @@ func HTTPRemoveAtQueue(h *Handler) httpFunc {
 			}
 			return
 		}
-		queueLen := h.queue.Len()
-		songCap := min(queueLen, len(intSongs))
-		songs := make([]uint, 0, songCap)
-		for _, i := range intSongs {
-			if len(songs) >= songCap {
-				break
-			}
-
-			idx := i
-			if idx < 0 {
-				idx += queueLen
-			}
-			if idx < 0 || idx >= queueLen {
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
-
-			songs = append(songs, uint(idx))
+		resp, err := h.RemoveAt(intSongs...)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
-		err = json.NewEncoder(w).Encode(h.RemoveIndices(songs...))
+		err = json.NewEncoder(w).Encode(resp)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
