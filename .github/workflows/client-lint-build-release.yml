@@ -14,8 +14,17 @@ jobs:
   lint:
     # go faster its free
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # each picks a different file in client/drivers (rtmidi vs midicat)
+        cgo: ["0", "1"]
+    env:
+      CGO_ENABLED: ${{ matrix.cgo }}
     steps:
       - uses: actions/checkout@v7
+      - name: alsa headers (rtmidi)
+        if: matrix.cgo == '1'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
       - name: setup
         uses: actions/setup-go@v7
         with:
