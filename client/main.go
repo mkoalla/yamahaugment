@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	compiled_drv "yamaclient/drivers"
 	"yamaclient/lib"
 	"yamaclient/lib/channel"
 	"yamaclient/lib/node"
@@ -12,7 +13,6 @@ import (
 	"gitlab.com/gomidi/midi/v2"
 
 	"gitlab.com/gomidi/midi/v2/drivers"
-	_ "gitlab.com/gomidi/midi/v2/drivers/midicatdrv"
 )
 
 var config settings.Config
@@ -24,7 +24,7 @@ func init() {
 	if _, err := settings.Decode("settings.toml", &config); err != nil {
 		log.Fatal(err)
 	}
-	log.Println("Load Runtime")
+	log.Printf("Load Runtime (midi driver: %s)", compiled_drv.MIDI)
 	out, stop, err := config.LaunchDriverRuntime()
 	if err != nil {
 		log.Fatal(err)
@@ -49,8 +49,6 @@ func NewPlayer(content *channel.Content) (*channel.Channel, error) {
 	}
 	return player, nil
 }
-
-const HELP = "args: [file]"
 
 func printPorts() {
 	fmt.Println(midi.GetOutPorts())
