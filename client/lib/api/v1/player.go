@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -31,7 +32,8 @@ const (
 
 type command struct {
 	event   WorkerEvent
-	elapsed *time.Duration // optional seek, applied before event
+	elapsed *time.Duration // optional absolute seek, applied before event
+	delta   *time.Duration // optional relative seek, resolved against the live position
 	reply   chan error     // buffered(1)
 }
 
@@ -106,8 +108,15 @@ func (w *queueWorker) run() {
 }
 
 func (w *queueWorker) apply(c command) error {
-	if c.elapsed != nil {
-		w.seek(*c.elapsed)
+	if c.elapsed != nil || c.delta != nil {
+		to := w.elapsed()
+		if c.elapsed != nil {
+			to = *c.elapsed
+		}
+		if c.delta != nil {
+			to = addSat(to, *c.delta)
+		}
+		w.seek(to)
 	}
 	switch c.event {
 	case Play:
@@ -144,6 +153,19 @@ func (w *queueWorker) elapsed() time.Duration {
 	return min(w.offset+time.Since(w.started), w.duration)
 }
 
+// delta clamp
+func addSat(a, b time.Duration) time.Duration {
+	sum := a + b
+	if b > 0 && sum < a {
+		return math.MaxInt64
+	}
+	if b < 0 && sum > a {
+		return math.MinInt64
+	}
+	return sum
+}
+
+// clamps to [0, duration]
 func (w *queueWorker) seek(to time.Duration) {
 	if w.cur == nil {
 		return
@@ -265,8 +287,9 @@ func (w *queueWorker) State() api.Player {
 	return s
 }
 
-func (w *queueWorker) send(ctx context.Context, event WorkerEvent, elapsed *time.Duration) error {
-	c := command{event: event, elapsed: elapsed, reply: make(chan error, 1)}
+// c.reply is set here
+func (w *queueWorker) send(ctx context.Context, c command) error {
+	c.reply = make(chan error, 1)
 	select {
 	case w.cmds <- c:
 	case <-ctx.Done():
@@ -333,7 +356,7 @@ func HTTPSetPlayer(h *Handler) httpFunc {
 		}
 
 		//fire
-		if err := h.worker.send(r.Context(), event, options.Elapsed); err != nil {
+		if err := h.worker.send(r.Context(), command{event: event, elapsed: options.Elapsed, delta: options.Delta}); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -347,7 +370,7 @@ func HTTPSetPlayer(h *Handler) httpFunc {
 // state's current song should persist presence & play-state when 204ing
 func HTTPNextPlayer(h *Handler) httpFunc {
 	return func(w wrt, r *req) {
-		err := h.worker.send(r.Context(), Next, nil)
+		err := h.worker.send(r.Context(), command{event: Next})
 		if errors.Is(err, api.ErrQueueEmpty) {
 			w.WriteHeader(http.StatusNoContent)
 			return

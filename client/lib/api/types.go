@@ -48,6 +48,7 @@ type Active interface{} // placeholder for types not crossing boundary (see play
 
 type PlayerPatchable struct {
 	Elapsed *time.Duration `json:"elapsed"`
+	Delta   *time.Duration `json:"delta"`
 	Status  *string        `json:"status"` //player status; only (omit)/Paused/Playing/Stopped
 }
 type PlayerSongMetadata struct {
