@@ -46,6 +46,8 @@ type Channel struct {
 	epoch   atomic.Uint64
 	done    chan error
 	stop    chan struct{} // closed by Stop(); one per GetPlayer() handle
+	exited  chan struct{} // closed when the running handle returns
+	length  time.Duration // time of last playable event
 }
 
 func New(d *drivers.Out) *Channel {
@@ -72,10 +74,11 @@ func (c *Channel) IsPlaying() bool {
 	return c.playing
 }
 
+// blocks until a running handle has returned, so nothing is sent after Stop()
 func (c *Channel) Stop() {
 	c.mx.Lock()
-	defer c.mx.Unlock()
 	if !c.loaded {
+		c.mx.Unlock()
 		return
 	}
 	// don't rely on reader.StopPlaying(): smf sets isPlaying late
@@ -84,6 +87,17 @@ func (c *Channel) Stop() {
 		c.stop = nil
 	}
 	c.playing = false
+	exited := c.exited
+	c.mx.Unlock()
+	if exited != nil {
+		<-exited
+	}
+}
+
+func (c *Channel) Duration() time.Duration {
+	c.mx.RLock()
+	defer c.mx.RUnlock()
+	return c.length
 }
 
 // stop note echo
@@ -123,7 +137,14 @@ func (c *Channel) setReader(data *Content) error {
 	if rd.Error() != nil {
 		return rd.Error()
 	}
+	var length time.Duration
+	rd.Do(func(te smf.TrackEvent) {
+		if te.Message.IsPlayable() {
+			length = max(length, time.Duration(te.AbsMicroSeconds)*time.Microsecond)
+		}
+	})
 	c.reader = rd
+	c.length = length
 	c.loaded = true
 	return nil
 }
@@ -165,18 +186,42 @@ func (c *Channel) Error() error {
 }
 
 // caller should have locked
-func (c *Channel) getPlayerHandle() func() error {
+func (c *Channel) getPlayerHandle(offset time.Duration) func() error {
 	rd := c.reader
 	out := c.driver
-	epoch := c.epoch.Load()
+	epoch := c.epoch.Add(1) // newer handles expire this one
 	done := c.done
 	stop := make(chan struct{})
 	c.stop = stop
+	var used atomic.Bool
 	return func() error {
-		if !c.epoch.CompareAndSwap(epoch, epoch+1) {
+		if !used.CompareAndSwap(false, true) {
 			return ErrHandleExpired
 		}
-		err := play(rd, *out, stop)
+		c.mx.Lock()
+		if c.epoch.Load() != epoch {
+			c.mx.Unlock()
+			return ErrHandleExpired
+		}
+		select {
+		case <-stop: // stopped before it started
+			c.mx.Unlock()
+			return nil
+		default:
+		}
+		exited := make(chan struct{})
+		c.exited = exited
+		c.mx.Unlock()
+
+		err := play(rd, *out, stop, offset)
+
+		c.mx.Lock()
+		if c.stop == stop { // ran to the end without Stop()
+			c.stop = nil
+			c.playing = false
+		}
+		c.mx.Unlock()
+		close(exited)
 		lib.Drain(done, err)
 		return err
 	}
@@ -187,8 +232,22 @@ type playEvent struct {
 	data []byte
 }
 
-// mirrors smf.TracksReader.Play, but properly cancellable
-func play(rd *smf.TracksReader, out drivers.Out, stop <-chan struct{}) error {
+// note on/off and poly aftertouch; skipped when seeking past them
+func isNoteEvent(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	switch data[0] & 0xF0 {
+	case 0x80, 0x90, 0xA0:
+		return true
+	}
+	return false
+}
+
+// mirrors smf.TracksReader.Play, but properly cancellable. starts at offset:
+// earlier non-note events (program, CC, pitch bend...) are sent at once so the
+// device state matches the seek point; earlier notes are dropped
+func play(rd *smf.TracksReader, out drivers.Out, stop <-chan struct{}, offset time.Duration) error {
 	if err := rd.Error(); err != nil {
 		return err
 	}
@@ -208,8 +267,17 @@ func play(rd *smf.TracksReader, out drivers.Out, stop <-chan struct{}) error {
 
 	timer := time.NewTimer(0)
 	defer timer.Stop()
-	start := time.Now()
+	start := time.Now().Add(-offset)
 	for _, ev := range evs {
+		if ev.at < offset {
+			if isNoteEvent(ev.data) {
+				continue
+			}
+			if err := out.Send(ev.data); err != nil {
+				return err
+			}
+			continue
+		}
 		timer.Reset(time.Until(start.Add(ev.at)))
 		select {
 		case <-stop:
@@ -224,6 +292,11 @@ func play(rd *smf.TracksReader, out drivers.Out, stop <-chan struct{}) error {
 }
 
 func (c *Channel) GetPlayer() (func() error, error) {
+	return c.GetPlayerAt(0)
+}
+
+// handle starts playback offset into the content
+func (c *Channel) GetPlayerAt(offset time.Duration) (func() error, error) {
 	if c.IsPlaying() {
 		return nil, ErrAlreadyPlaying
 	}
@@ -242,7 +315,7 @@ func (c *Channel) GetPlayer() (func() error, error) {
 	}
 
 	c.playing = true
-	handle := c.getPlayerHandle()
+	handle := c.getPlayerHandle(offset)
 	unlock()
 	return handle, nil
 }
