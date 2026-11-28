@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"runtime"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,7 +38,7 @@ type Content struct {
 type Channel struct {
 	driver  *drivers.Out
 	content Content
-	reader  *smf.TracksReader
+	events  *events
 	mx      sync.RWMutex
 	playing bool
 	loaded  bool
@@ -47,7 +46,6 @@ type Channel struct {
 	done    chan error
 	stop    chan struct{} // closed by Stop(); one per GetPlayer() handle
 	exited  chan struct{} // closed when the running handle returns
-	length  time.Duration // time of last playable event
 }
 
 func New(d *drivers.Out) *Channel {
@@ -94,10 +92,14 @@ func (c *Channel) Stop() {
 	}
 }
 
+// time of the last playable event; 0 if not loaded
 func (c *Channel) Duration() time.Duration {
 	c.mx.RLock()
 	defer c.mx.RUnlock()
-	return c.length
+	if !c.loaded {
+		return 0
+	}
+	return c.events.duration()
 }
 
 // stop note echo
@@ -137,14 +139,11 @@ func (c *Channel) setReader(data *Content) error {
 	if rd.Error() != nil {
 		return rd.Error()
 	}
-	var length time.Duration
-	rd.Do(func(te smf.TrackEvent) {
-		if te.Message.IsPlayable() {
-			length = max(length, time.Duration(te.AbsMicroSeconds)*time.Microsecond)
-		}
-	})
-	c.reader = rd
-	c.length = length
+	evs, err := newEvents(rd)
+	if err != nil {
+		return err
+	}
+	c.events = evs
 	c.loaded = true
 	return nil
 }
@@ -167,27 +166,9 @@ func (c *Channel) Load(data Content, lazy bool) error {
 	return nil
 }
 
-func (c *Channel) ForEach(fn func(smf.TrackEvent)) error {
-	c.mx.RLock()
-	defer c.mx.RUnlock()
-	//
-	if c.reader == nil {
-		return ErrNoContentLoaded
-	}
-	return c.reader.Do(fn).Error()
-}
-func (c *Channel) Error() error {
-	c.mx.Lock()
-	defer c.mx.Unlock()
-	if !c.loaded {
-		return nil
-	}
-	return c.reader.Error()
-}
-
 // caller should have locked
 func (c *Channel) getPlayerHandle(offset time.Duration) func() error {
-	rd := c.reader
+	evs := c.events
 	out := c.driver
 	epoch := c.epoch.Add(1) // newer handles expire this one
 	done := c.done
@@ -213,7 +194,7 @@ func (c *Channel) getPlayerHandle(offset time.Duration) func() error {
 		c.exited = exited
 		c.mx.Unlock()
 
-		err := play(rd, *out, stop, offset)
+		err := play(evs, *out, stop, offset)
 
 		c.mx.Lock()
 		if c.stop == stop { // ran to the end without Stop()
@@ -225,11 +206,6 @@ func (c *Channel) getPlayerHandle(offset time.Duration) func() error {
 		lib.Drain(done, err)
 		return err
 	}
-}
-
-type playEvent struct {
-	at   time.Duration
-	data []byte
 }
 
 // note on/off and poly aftertouch; skipped when seeking past them
@@ -247,20 +223,10 @@ func isNoteEvent(data []byte) bool {
 // mirrors smf.TracksReader.Play, but properly cancellable. starts at offset:
 // earlier non-note events (program, CC, pitch bend...) are sent at once so the
 // device state matches the seek point; earlier notes are dropped
-func play(rd *smf.TracksReader, out drivers.Out, stop <-chan struct{}, offset time.Duration) error {
-	if err := rd.Error(); err != nil {
-		return err
-	}
+func play(evs *events, out drivers.Out, stop <-chan struct{}, offset time.Duration) error {
 	if err := out.Open(); err != nil {
 		return err
 	}
-	var evs []playEvent
-	rd.Do(func(te smf.TrackEvent) {
-		if te.Message.IsPlayable() {
-			evs = append(evs, playEvent{time.Duration(te.AbsMicroSeconds) * time.Microsecond, te.Message})
-		}
-	})
-	sort.SliceStable(evs, func(i, j int) bool { return evs[i].at < evs[j].at })
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -268,23 +234,24 @@ func play(rd *smf.TracksReader, out drivers.Out, stop <-chan struct{}, offset ti
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	start := time.Now().Add(-offset)
-	for _, ev := range evs {
-		if ev.at < offset {
-			if isNoteEvent(ev.data) {
+	for i := range evs.len() {
+		at, data := evs.time(i), evs.msg(i)
+		if at < offset {
+			if isNoteEvent(data) {
 				continue
 			}
-			if err := out.Send(ev.data); err != nil {
+			if err := out.Send(data); err != nil {
 				return err
 			}
 			continue
 		}
-		timer.Reset(time.Until(start.Add(ev.at)))
+		timer.Reset(time.Until(start.Add(at)))
 		select {
 		case <-stop:
 			return nil
 		case <-timer.C:
 		}
-		if err := out.Send(ev.data); err != nil {
+		if err := out.Send(data); err != nil {
 			return err
 		}
 	}
