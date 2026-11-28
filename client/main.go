@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"yamaclient/lib/api"
+	"yamaclient/lib"
 	"yamaclient/lib/channel"
 	"yamaclient/lib/node"
 	"yamaclient/lib/settings"
@@ -39,7 +39,7 @@ func NewPlayer(content *channel.Content) (*channel.Channel, error) {
 	file := config.Main.DefaultTrack
 
 	if content == nil {
-		content = &channel.Content{Name: file, Source: api.ContentFile, Data: file}
+		content = &channel.Content{Name: file, Source: lib.ContentFile, Data: file}
 	} else if file == "" {
 		return nil, errors.New("no file provided")
 	}

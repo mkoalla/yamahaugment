@@ -3,6 +3,7 @@ package v1
 import (
 	"sync"
 	"time"
+	"yamaclient/lib"
 	"yamaclient/lib/api"
 	"yamaclient/lib/channel"
 
@@ -89,7 +90,7 @@ func (c *channelCache) Load(song api.Song) (*channel.Channel, error) {
 
 	ch := c.channels[idx]
 	ch.Stop() // ex, was playing back-to-back
-	content := channel.Content{Name: song.Name, Data: song.Name, Source: api.ToSourceType(song.Type)}
+	content := channel.Content{Name: song.Name, Data: song.Name, Source: lib.ToSourceType(song.Type)}
 	if err := ch.Load(content, false); err != nil {
 		c.Release(song, idx)
 		return nil, err

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"yamaclient/lib"
 	"yamaclient/lib/api"
 	"yamaclient/lib/channel"
 	"yamaclient/lib/settings"
@@ -67,7 +68,7 @@ func (h *Handler) Push(songs ...api.Song) (*api.QueueChangeResponse, error) {
 		return nil, api.ErrQueueFull
 	}
 	for _, s := range songs {
-		if api.ToSourceType(s.Type) == api.None { //bad input
+		if lib.ToSourceType(s.Type) == lib.None { //bad input
 			continue
 		}
 		h.queue.PushBack(s)

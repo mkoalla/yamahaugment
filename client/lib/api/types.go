@@ -3,6 +3,8 @@ package api
 import (
 	"errors"
 	"fmt"
+	"time"
+	"yamaclient/lib"
 )
 
 var (
@@ -10,40 +12,8 @@ var (
 	ErrQueueFull  = fmt.Errorf("queue will not fit request%w", ErrBadRequest)
 )
 
-const (
-	UintMax = ^uint(0)
-)
-
-const (
-	None SourceType = iota
-	ContentFile
-	ContentDirect
-)
-
-type SourceType uint8
-
-func (s SourceType) String() string {
-	switch s {
-	case None:
-		return "None"
-	case ContentFile:
-		return "ContentFile"
-	case ContentDirect:
-		return "ContentDirect"
-	default:
-		return "Unknown"
-	}
-}
-func ToSourceType(s string) SourceType {
-	switch s {
-	case "ContentFile":
-		return ContentFile
-	case "ContentDirect":
-		return ContentDirect
-	default:
-		return None
-	}
-}
+type SourceType = lib.SourceType
+type PlayerStatus = lib.PlayerStatus
 
 type NodeHandlerQueue interface {
 	Peek(max uint) *Queue
@@ -70,4 +40,22 @@ type QueueChangeResponse struct {
 type Queue struct {
 	QueueChangeResponse
 	Songs []Song `json:"songs"`
+}
+
+type Active interface{} // placeholder for types not crossing boundary (see player.go)
+
+type PlayerPatchable struct {
+	Elapsed *time.Duration `json:"elapsed"`
+	Status  *string        `json:"status"` //player status; only (omit)/Paused/Playing/Stopped
+}
+type PlayerSongMetadata struct {
+	Start   time.Time     `json:"start"`
+	Elapsed time.Duration `json:"elapsed"`
+	End     time.Duration `json:"remaining"`
+}
+type Player struct {
+	Current  *Song              `json:"current-song"`
+	Status   string             `json:"status"`
+	Metadata PlayerSongMetadata `json:"metadata"`
+	Active   Active             `json:"-"`
 }

@@ -11,14 +11,13 @@ import (
 	"time"
 
 	"yamaclient/lib"
-	"yamaclient/lib/api"
 
 	"gitlab.com/gomidi/midi/v2"
 	"gitlab.com/gomidi/midi/v2/drivers"
 	"gitlab.com/gomidi/midi/v2/smf"
 )
 
-type SourceType = api.SourceType
+type SourceType = lib.SourceType
 
 var (
 	ErrLoadPlaying          = errors.New("attempt to load new content while existing")
@@ -112,11 +111,11 @@ func (c *Channel) HaltNotesNow() error {
 func (c *Channel) setReader(data *Content) error {
 	var rd *smf.TracksReader
 	switch data.Source {
-	case api.None:
+	case lib.None:
 		return ErrNoContentLoaded
-	case api.ContentFile:
+	case lib.ContentFile:
 		rd = smf.ReadTracks(fmt.Sprintf("data/%s", data.Data), data.Tracks...)
-	case api.ContentDirect:
+	case lib.ContentDirect:
 		rd = smf.ReadTracksFrom((data.Data).(io.Reader), data.Tracks...)
 	default:
 		return fmt.Errorf("%w: %d", ErrUnknownContentSource, data.Source)
