@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	compiled_drv "yamaclient/drivers"
 	"yamaclient/lib"
 
 	"gitlab.com/gomidi/midi/v2"
@@ -228,8 +229,11 @@ func play(evs *events, out drivers.Out, stop <-chan struct{}, offset time.Durati
 		return err
 	}
 
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
+	// const -> compiler can remove at build time
+	if compiled_drv.LockThread {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+	}
 
 	timer := time.NewTimer(0)
 	defer timer.Stop()

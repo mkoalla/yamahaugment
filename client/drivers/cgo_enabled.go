@@ -2,7 +2,8 @@
 
 package drivers
 
-// in-process ALSA/CoreMIDI/WinMM via rtmidi; needs a C toolchain + ALSA headers
+// in-process ALSA/CoreMIDI/WinMM via rtmidi
+// needs a C toolchain + ALSA headers (hence cgo)
 import _ "gitlab.com/gomidi/midi/v2/drivers/rtmididrv"
 
 const MIDI = "rtmididrv"
