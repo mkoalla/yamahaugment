@@ -20,3 +20,17 @@ ExecStart=/path/to/client/yamaclient
    CPUSchedulingPriority=10
    CPUSchedulingResetOnFork=yes
    ```
+
+## Dependencies
+### Running the client
+
+- **ALSA sequencer**: the `snd-seq` kernel module (loaded by default), and the user must be in the `audio` group to open `/dev/snd/seq`.
+- **MIDI driver**: depends on how the binary was built (see `client/drivers/`).
+  - cgo build (`CGO_ENABLED=1`, rtmidi; the default for native builds): `libasound2t64`, `libstdc++6`
+  - non-cgo build (`CGO_ENABLED=0`, midicat; what CI releases): [`midicat`](https://gitlab.com/gomidi/tools) on `PATH`
+- **Dev Runtime (opt)**: (software synth stand-in for the piano): `fluidsynth` is implemented + plus a soundfont, e.g. `fluid-soundfont-gm`.
+
+### Building
+- `go`
+- `gcc`, `g++`, `libasound2` / `libasound2-dev` (ALSA headers for rtmidi)
+- `make`, `git`
