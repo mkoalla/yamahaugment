@@ -24,6 +24,7 @@ type Handler struct {
 
 	qsubscribe chan struct{} // 1-slot level signal, never replaced; doesnt return element (subs compete to pop)
 	channels   *channelCache
+	worker     *queueWorker
 }
 
 func NewHandler(driver *drivers.Out, config settings.HttpConfig) *Handler {
@@ -92,6 +93,18 @@ func (h *Handler) Push(songs ...api.Song) (*api.QueueChangeResponse, error) {
 
 	return h.newAPICCR(), nil
 }
+
+// peek + remove head under one lock
+func (h *Handler) PopFront() (api.Song, bool) {
+	h.mx.Lock()
+	defer h.mx.Unlock()
+	front := h.queue.Front()
+	if front == nil {
+		return api.Song{}, false
+	}
+	return h.queue.Remove(front).(api.Song), true
+}
+
 func (h *Handler) RemoveIndices(idxs ...uint) *api.QueueChangeResponse {
 	h.mx.Lock()
 	defer h.mx.Unlock()
