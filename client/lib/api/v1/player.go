@@ -1,12 +1,11 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 	"yamaclient/lib"
@@ -20,317 +19,283 @@ type Active struct {
 	Content *channel.Content `json:"-"`
 }
 
-var (
-	ErrErrFlagSet         = errors.New("error flag set")
-	ErrStoppedFlag        = errors.New("stop flag set") //harmless
-	ErrFailedClearRunning = errors.New("cannot clear while running")
-	ErrFailedRace         = errors.New("race against another call")
-)
-
 type WorkerEvent uint8
 
 const (
-	None      WorkerEvent = iota
-	Interrupt             // send awaits worker response
+	None WorkerEvent = iota // no transition (seek-only)
 	Stop
-	Play // send can restart dead worker
+	Play
 	Pause
-	Next // send can restart dead worker
+	Next
 )
 
-type WorkerPayload struct {
-	Event   WorkerEvent
-	Payload any
+type command struct {
+	event   WorkerEvent
+	elapsed *time.Duration // optional seek, applied before event
+	reply   chan error     // buffered(1)
 }
 
+type songDone struct {
+	gen uint64
+	err error
+}
+
+// a single goroutine (run) owns all player state below the snapshot,
+// so none of it is locked. everyone else talks to it through cmds
 type queueWorker struct {
-	mx      sync.Mutex
-	stopped atomic.Bool
-	errFlag atomic.Bool
-	err     error
+	handler  *Handler
+	ctx      context.Context
+	cmds     chan command
+	done     chan songDone              // play goroutines report here
+	snapshot atomic.Pointer[api.Player] // republished after every step
 
-	handler *Handler
-	state   *api.Player
-
-	event     chan *WorkerPayload // actions to free from Awaiting
-	subscribe chan struct{}
+	status   lib.PlayerStatus
+	cur      *api.Song
+	ch       *channel.Channel
+	offset   time.Duration // position when not playing / at last (re)start
+	started  time.Time     // wall time of last (re)start
+	duration time.Duration
+	gen      uint64 // bumped on every start/halt; stale songDone is ignored
 }
 
-func (q *queueWorker) clear() error {
-	if !q.stopped.Load() {
-		return ErrFailedClearRunning
-	}
-	<-q.subscribe // redundancy if mid-close
-
-	q.mx.Lock()
-	defer q.mx.Unlock()
-	if !q.errFlag.CompareAndSwap(true, false) {
-		return fmt.Errorf("worker clear(): %w", ErrFailedRace)
-	}
-
-	//reset props
-	q.err = nil
-	// close(q.subscribe) //worker will close
-	// close(q.event)
-	q.state = &api.Player{
-		Active: Active{},
-	}
-	return nil
-}
-
-// Play & Next can restart the worker
-//
-// Interrupt holds the lock & worker loop until returnfunc() releases TWICE
-// pre-cycle modification currently unused by anything else,but here in case
-// does not return errors (currently)
-func (q *queueWorker) sendEvent(e WorkerEvent, data ...any) any {
-	q.mx.Lock()
-	defer q.mx.Unlock()
-
-	var err error
-	switch e {
-	case Stop:
-		if !q.stopped.CompareAndSwap(false, true) {
-			return nil // q.event may be closed
-		}
-		q.event <- &WorkerPayload{Event: e, Payload: data}
-		return nil
-	case Interrupt:
-		ch := make(chan api.Player)
-		q.event <- &WorkerPayload{e, ch}
-		//
-		ctr := atomic.Uint32{}
-		var val uint32 = 0
-		// returns nil once worker is able to resume
-		// Pre-Cycle | call()->Cycle | Post-Cycle | call() | continue
-		return func() *api.Player {
-			if val >= 2 || !ctr.CompareAndSwap(val, val+1) {
-				return nil
-			}
-			val++
-			c := <-ch
-			return &c // worker is holding lock here
-		}
-	case Play, Next:
-		if q.stopped.Load() {
-			err = q.err
-			_ = q.clear() // errs not harmful currently
-			err = errors.Join(err, q.run())
-		}
-		fallthrough
-	default:
-		if q.stopped.Load() {
-			return nil
-		}
-		q.event <- &WorkerPayload{Event: e, Payload: data}
-	}
-
-	if err != nil { //not fatal
-		log.Printf("sendEvent %d: %v", e, err)
-	}
-	return nil
-}
-
-// worker will handle release inline, nobody else should call release() anyway
-// func (q *queueWorker) release() {
-// 	q.mx.Lock()
-// 	defer q.mx.Unlock()
-
-//		old := q.subscribe
-//		q.subscribe := make(chan struct{})
-//		close(old)
-//	}
-
-func (q *queueWorker) _step(p *WorkerPayload) (ok bool, err error) {
-	if q.stopped.Load() {
-		p.Event = Stop
-	}
-
-	var interruptCh chan api.Player
-	var queuePushed bool
-
-	//Pre-Cycle
-	switch p.Event {
-	case Stop:
-		return false, nil
-	case Interrupt:
-		interruptCh = p.Payload.(chan api.Player)
-	case Play:
-	case Next:
-	case Pause:
-	case None: // signal that song queue added, try pop
-		queuePushed = true
-	}
-
-	//Pre-Cycle Stage
-	q.mx.Lock()
-	defer q.mx.Unlock()
-	if interruptCh != nil { //must run while owning lock
-		interruptCh <- *q.state
-	}
-
-	//Cycle Stage
-	// TODO ensure player performs action requested (r/w to/from handler and state.active)
-	// non-Next commands can directly use Active (unless the song is over)
-	// may need an event case for when song is completed. this might warrant
-	// redesigining the midi Do() player again to reveal more of its states
-	// by post-cycle, q.state should
-	// fully reflect changes
-
-	//Post-Cycle Stage
-	if interruptCh != nil { //must run while owning lock
-		interruptCh <- *q.state
-	}
-	fmt.Println(queuePushed, p.Event, p.Payload) // tmp prevent queuePushed blocking compilation
-	return true, nil
-}
-func (q *queueWorker) _digestErr(ok bool, err error) {
-	if err == nil {
-		return
-	}
-
-	t := "WARN"
-	if !ok {
-		t = "ERR"
-	}
-	log.Printf("queueworker %s: %v", t, err)
-}
-func (q *queueWorker) _runner() {
-	q.mx.Lock()
-	q.state.Status = lib.Paused.String()
-	q.mx.Unlock()
-	//
-	var stepErr error
-	var none WorkerPayload
-	for {
-		var p = &none
-		select {
-		case p = <-q.event: // pointer to a copy
-		case <-q.handler.AwaitPush():
-		}
-		//
-		ok, err := q._step(p)
-		q._digestErr(ok, err)
-		if !ok {
-			stepErr = err // (true, err) = big error
-			break
-		}
-
-	}
-	// cleanup
-	q.mx.Lock()
-	defer q.mx.Unlock()
-
-	q.stopped.Store(true)
-	if stepErr != nil {
-		q.err = stepErr
-		q.errFlag.Store(true)
-	}
-
-	close(q.event)
-	close(q.subscribe)
-
-}
-
-// instantaneus
-func (q *queueWorker) run() error {
-	q.mx.Lock()
-	defer q.mx.Unlock()
-	if !q.stopped.CompareAndSwap(true, false) {
-		return fmt.Errorf("worker run(): %w", ErrFailedRace)
-	}
-	if q.errFlag.Load() {
-		return ErrErrFlagSet
-	}
-	//
-	q.state.Status = lib.Stopped.String()
-	q.event = make(chan *WorkerPayload)
-	q.subscribe = make(chan struct{})
-	go q._runner()
-	return nil
-}
-
-// points to a readable copy of the playerstate
-// bypasses lock when owned by worker, or stopped (release == nil)
-func (q *queueWorker) UpdateState() (*api.Player, error) {
-	var state *api.Player
-	release := q.sendEvent(Interrupt).(func() *api.Player)
-	//Pre cycle opns, try modify state
-	// nop
-
-	//Post cycle opns
-	if release == nil { // stopped, should capture manually
-		q.mx.Lock()
-		s := *q.state //copy
-		q.mx.Unlock()
-		state = &s
-	} else { // drain interrupt steps
-		s := release()
-		for s != nil {
-			state = s
-			s = release()
-		}
-	}
-
-	return state, nil
-}
-func newWorker(h *Handler) *queueWorker {
-	//
-	closedSub := make(chan struct{})
-	close(closedSub)
-	closedEvent := make(chan *WorkerPayload)
-	close(closedEvent)
-	//
-	q := queueWorker{
+func newWorker(h *Handler, ctx context.Context) *queueWorker {
+	w := &queueWorker{
 		handler: h,
-		state: &api.Player{
-			Active: Active{},
-		},
-		event:     closedEvent,
-		subscribe: closedSub,
+		ctx:     ctx,
+		cmds:    make(chan command),
+		done:    make(chan songDone),
+		status:  lib.Awaiting, // first push autoplays
 	}
-	q.stopped.Store(true)
-	return &q
+	w.publish()
+	return w
 }
-
-var worker atomic.Pointer[queueWorker]
 
 func InitPlayerWorker(h *Handler) {
-	w := newWorker(h)
-	if !worker.CompareAndSwap(nil, w) {
+	if h.worker != nil {
 		panic("player worker already initialized")
-	} else if err := w.run(); err != nil {
-		panic(err)
+	}
+	h.worker = newWorker(h, context.Background())
+	go h.worker.run()
+}
+
+func (w *queueWorker) run() {
+	for {
+		var reply chan error
+		var err error
+		select {
+		case c := <-w.cmds:
+			reply = c.reply
+			err = w.apply(c)
+		case d := <-w.done:
+			if d.gen == w.gen {
+				w.songEnded(d.err)
+			}
+		case <-w.handler.AwaitPush():
+			if w.status == lib.Awaiting {
+				w.advance()
+			}
+		case <-w.ctx.Done():
+			w.halt()
+			return
+		}
+		w.publish() // before replying, so the caller reads its own result
+		if reply != nil {
+			reply <- err
+		}
 	}
 }
 
-// TODO: ensure h.mx is actually used in these & queue.go
+func (w *queueWorker) apply(c command) error {
+	if c.elapsed != nil {
+		w.seek(*c.elapsed)
+	}
+	switch c.event {
+	case Play:
+		switch w.status {
+		case lib.Paused, lib.Stopped:
+			if w.cur != nil {
+				w.start(w.offset)
+				return nil
+			}
+			w.advance()
+		case lib.Awaiting:
+			w.advance()
+		}
+	case Pause:
+		if w.status == lib.Playing {
+			w.offset = w.elapsed()
+			w.halt()
+			w.status = lib.Paused
+		}
+	case Stop: // keeps the song, rewinds
+		w.halt()
+		w.offset = 0
+		w.status = lib.Stopped
+	case Next:
+		return w.next()
+	}
+	return nil
+}
+
+func (w *queueWorker) elapsed() time.Duration {
+	if w.status != lib.Playing {
+		return w.offset
+	}
+	return min(w.offset+time.Since(w.started), w.duration)
+}
+
+func (w *queueWorker) seek(to time.Duration) {
+	if w.cur == nil {
+		return
+	}
+	to = min(max(to, 0), w.duration)
+	if w.status == lib.Playing {
+		w.halt()
+		w.start(to)
+		return
+	}
+	w.offset = to
+}
+
+// empty queue leaves the current song and state untouched
+func (w *queueWorker) next() error {
+	song, ok := w.handler.PopFront()
+	if !ok {
+		return api.ErrQueueEmpty
+	}
+	w.halt()
+	if err := w.load(song); err != nil {
+		log.Printf("player: loading %v: %v", song, err)
+		w.advance()
+		return nil
+	}
+	w.start(0)
+	return nil
+}
+
+// plays the next loadable song, or goes Awaiting
+func (w *queueWorker) advance() {
+	w.halt()
+	for {
+		song, ok := w.handler.PopFront()
+		if !ok {
+			w.cur, w.ch = nil, nil
+			w.offset, w.duration = 0, 0
+			w.status = lib.Awaiting
+			return
+		}
+		if err := w.load(song); err != nil {
+			log.Printf("player: loading %v: %v", song, err)
+			continue
+		}
+		w.start(0)
+		return
+	}
+}
+
+func (w *queueWorker) load(song api.Song) error {
+	ch, err := w.handler.channels.Load(song)
+	if err != nil {
+		return err
+	}
+	w.cur, w.ch = &song, ch
+	w.offset, w.duration = 0, ch.Duration()
+	return nil
+}
+
+func (w *queueWorker) start(offset time.Duration) {
+	play, err := w.ch.GetPlayerAt(offset)
+	if err != nil {
+		log.Printf("player: starting %v: %v", w.cur, err)
+		w.advance()
+		return
+	}
+	w.gen++
+	gen := w.gen
+	w.offset, w.started = offset, time.Now()
+	w.status = lib.Playing
+	go func() {
+		err := play()
+		select {
+		case w.done <- songDone{gen, err}:
+		case <-w.ctx.Done():
+		}
+	}()
+}
+
+// silences the current channel; Stop() blocks until its handle returned
+func (w *queueWorker) halt() {
+	w.gen++
+	if w.ch == nil {
+		return
+	}
+	w.ch.Stop()
+	_ = w.ch.HaltNotesNow()
+}
+
+func (w *queueWorker) songEnded(err error) {
+	if err != nil {
+		log.Printf("player: playing %v: %v", w.cur, err)
+	}
+	w.advance()
+}
+
+func (w *queueWorker) publish() {
+	p := &api.Player{Status: w.status.String()}
+	if w.cur != nil {
+		song := *w.cur
+		p.Current = &song
+	}
+	p.Metadata.Elapsed = w.offset
+	p.Metadata.End = w.duration - w.offset
+	if w.status == lib.Playing {
+		p.Metadata.Start = w.started.Add(-w.offset)
+	}
+	w.snapshot.Store(p)
+}
+
+// never blocks on the worker; times are filled in at read time while playing
+func (w *queueWorker) State() api.Player {
+	s := *w.snapshot.Load()
+	if s.Status == lib.Playing.String() {
+		total := s.Metadata.Elapsed + s.Metadata.End
+		el := min(time.Since(s.Metadata.Start), total)
+		s.Metadata.Elapsed, s.Metadata.End = el, total-el
+	}
+	return s
+}
+
+func (w *queueWorker) send(ctx context.Context, event WorkerEvent, elapsed *time.Duration) error {
+	c := command{event: event, elapsed: elapsed, reply: make(chan error, 1)}
+	select {
+	case w.cmds <- c:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-c.reply:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func writeState(w wrt, q *queueWorker) {
+	if err := json.NewEncoder(w).Encode(q.State()); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+}
 
 // GET /player
 func HTTPGetPlayer(h *Handler) httpFunc {
 	return func(w wrt, r *req) {
-		worker := worker.Load() // *queueWorker
-		var err error
-
-		state, err := worker.UpdateState()
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		err = json.NewEncoder(w).Encode(state)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
+		writeState(w, h.worker)
 	}
 }
 
 // PATCH /player
 func HTTPSetPlayer(h *Handler) httpFunc {
 	return func(w wrt, r *req) {
-		worker := worker.Load() // *queueWorker
-
 		//parse input json
 		var options api.PlayerPatchable
 		if err := json.NewDecoder(r.Body).Decode(&options); err != nil {
@@ -344,11 +309,7 @@ func HTTPSetPlayer(h *Handler) httpFunc {
 		}
 
 		// validate fields
-		var elapsed *time.Duration // pointer so nil=no change
 		var status lib.PlayerStatus
-		if options.Elapsed != nil {
-			elapsed = options.Elapsed
-		}
 		if options.Status != nil {
 			status = lib.ToPlayerStatus(*options.Status)
 			if status == lib.Unknown {
@@ -372,49 +333,28 @@ func HTTPSetPlayer(h *Handler) httpFunc {
 		}
 
 		//fire
-		worker.sendEvent(event, elapsed)
+		if err := h.worker.send(r.Context(), event, options.Elapsed); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		writeState(w, h.worker)
 	}
 }
 
 // POST /player/next
-
-// need to check for races, and migrate to a worker consumer
 // 200 OK
 // 204 NO CONTENT -> queue is empty
 // state's current song should persist presence & play-state when 204ing
 func HTTPNextPlayer(h *Handler) httpFunc {
 	return func(w wrt, r *req) {
-		worker := worker.Load() // *queueWorker
-		worker.sendEvent(Next)
+		err := h.worker.send(r.Context(), Next, nil)
+		if errors.Is(err, api.ErrQueueEmpty) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		} else if err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		writeState(w, h.worker)
 	}
 }
-
-/*
-// simple demo
-func(w wrt, r *req) {
-	h.channels.ForEach(chanStop)
-	for h.queue.Len() > 0 {
-		song := h.Peek(1).Songs[0]
-		h.RemoveIndices(0)
-		// ! ^ race here
-
-		ch, err := h.channels.Load(song)
-		if err != nil {
-			log.Printf("parsing %v: %v", song, err)
-			continue
-		}
-		play, err := ch.GetPlayer() // no errcheck since channels r autogenerated
-		if errors.Is(err, channel.ErrAlreadyPlaying) {
-			_ = ch.Await()
-			play, err = ch.GetPlayer()
-		}
-		if err != nil {
-			log.Printf("starting %v: %v", song, err)
-			continue
-		}
-		go play() //nolint
-		return
-	}
-	w.WriteHeader(http.StatusNoContent) //empty/ied
-}
-*/
